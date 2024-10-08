@@ -390,6 +390,32 @@ var _ = Describe("Drift", func() {
 		env.EventuallyExpectNotFound(pod, nodeClaim, node)
 		env.EventuallyExpectHealthyPodCount(selector, numPods)
 	})
+	It("should not disrupt nodes that have drifted due to AMIs if the reason is excluded", func() {
+		// We're going to define a budget that doesn't allow any drift to happen
+		nodePool.Spec.Disruption.Budgets = []karpv1.Budget{{
+			Nodes:   "0",
+			Reasons: []karpv1.DisruptionReason{"AMIDrift"},
+		}}
+
+		oldCustomAMI := env.GetAMIBySSMPath(fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/x86_64/standard/recommended/image_id", env.K8sVersionWithOffset(1)))
+		nodeClass.Spec.AMIFamily = lo.ToPtr(v1.AMIFamilyAL2023)
+		nodeClass.Spec.AMISelectorTerms = []v1.AMISelectorTerm{{ID: oldCustomAMI}}
+
+		env.ExpectCreated(dep, nodeClass, nodePool)
+		env.ExpectCreatedNodeCount("==", 1)
+
+		nodeClaim := env.EventuallyExpectCreatedNodeClaimCount("==", 1)[0]
+		env.EventuallyExpectCreatedNodeCount("==", 1)
+		env.EventuallyExpectHealthyPodCount(selector, numPods)
+
+		By("drifting the node ami")
+		// Drift the AMI
+		nodeClass.Spec.AMISelectorTerms = []v1.AMISelectorTerm{{ID: amdAMI}}
+		env.ExpectCreatedOrUpdated(nodeClass)
+
+		env.EventuallyExpectDrifted(nodeClaim)
+		env.ConsistentlyExpectNoDisruptions(1, time.Minute)
+	})
 	It("should return drifted if the AMI no longer matches the existing NodeClaims instance type", func() {
 		armAMI := env.GetAMIBySSMPath(fmt.Sprintf("/aws/service/eks/optimized-ami/%s/amazon-linux-2023/arm64/standard/recommended/image_id", env.K8sVersion()))
 		nodeClass.Spec.AMIFamily = lo.ToPtr(v1.AMIFamilyAL2023)
